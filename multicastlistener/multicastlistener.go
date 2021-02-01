@@ -1,4 +1,4 @@
-package main
+package multicastlistener
 
 import (
 	"fmt"
@@ -13,26 +13,27 @@ import (
 )
 
 const (
-	multicastAddress = "224.0.2.60:4445"
-	maxDatagramSize  = 1024
+	maxDatagramSize = 1024
 )
 
 var regex = regexp.MustCompile(`\[MOTD]([^\[\]]*)\[/MOTD].*\[AD]([^\[\]]*)\[/AD]`)
 
 type MinecraftMulticastListener struct {
-	conn      *net.UDPConn
-	lock      *sync.Mutex
-	stop      bool
-	stopped   chan struct{}
-	gameFound func(motd, serverIP string, serverPort int)
+	listenAddress string
+	conn          *net.UDPConn
+	lock          *sync.Mutex
+	stop          bool
+	stopped       chan struct{}
+	gameFound     func(motd, serverIP string, serverPort int)
 }
 
-func NewMinecraftMulticastListener(gameFound func(serverMOTD, serverIP string, serverPort int)) *MinecraftMulticastListener {
+func NewMinecraftMulticastListener(listenAddress string, gameFound func(serverMOTD, serverIP string, serverPort int)) *MinecraftMulticastListener {
 	return &MinecraftMulticastListener{
-		lock:      new(sync.Mutex),
-		stop:      true,
-		stopped:   make(chan struct{}),
-		gameFound: gameFound,
+		listenAddress: listenAddress,
+		lock:          new(sync.Mutex),
+		stop:          true,
+		stopped:       make(chan struct{}),
+		gameFound:     gameFound,
 	}
 }
 
@@ -91,7 +92,7 @@ func (m *MinecraftMulticastListener) Start() error {
 		return fmt.Errorf("already started")
 	}
 
-	addr, err := net.ResolveUDPAddr("udp4", multicastAddress)
+	addr, err := net.ResolveUDPAddr("udp4", m.listenAddress)
 	if err != nil {
 		m.lock.Unlock()
 		return fmt.Errorf("error resolving multicast address: %s", err)

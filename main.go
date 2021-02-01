@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"github.com/MicOestergaard/mineproxy/multicastlistener"
+	"github.com/MicOestergaard/mineproxy/tcpproxy"
 	"log"
 	"os"
 	"os/signal"
@@ -11,7 +13,7 @@ import (
 )
 
 type gameAnnouncementHandler struct {
-	p        *Proxy
+	p        *tcpproxy.Proxy
 	lock     *sync.Mutex
 	lastSeen string
 }
@@ -28,14 +30,14 @@ func (g *gameAnnouncementHandler) gameFound(serverMOTD, serverIP string, serverP
 	}
 }
 
-func NewGameAnnouncementHandler(proxy *Proxy) *gameAnnouncementHandler {
+func NewGameAnnouncementHandler(proxy *tcpproxy.Proxy) *gameAnnouncementHandler {
 	return &gameAnnouncementHandler{
 		p:    proxy,
 		lock: new(sync.Mutex),
 	}
 }
 
-func setupCloseHandler(p *Proxy, m *MinecraftMulticastListener) {
+func setupCloseHandler(p *tcpproxy.Proxy, m *multicastlistener.MinecraftMulticastListener) {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -54,28 +56,30 @@ func setupCloseHandler(p *Proxy, m *MinecraftMulticastListener) {
 }
 
 func main() {
-	listenPort := 25565
+	tcpListenPort := 25565
+	multicastListenAddress := "224.0.2.60:4445"
+
 	if len(os.Args) > 1 {
 		var err error
-		listenPort, err = strconv.Atoi(os.Args[1])
+		tcpListenPort, err = strconv.Atoi(os.Args[1])
 		if err != nil {
 			log.Fatalln("Usage:", os.Args[0], "[port]")
 		}
 	}
 
-	p := NewProxy(listenPort)
+	p := tcpproxy.NewProxy(tcpListenPort)
 	g := NewGameAnnouncementHandler(p)
-	m := NewMinecraftMulticastListener(g.gameFound)
+	m := multicastlistener.NewMinecraftMulticastListener(multicastListenAddress, g.gameFound)
 
 	setupCloseHandler(p, m)
 
-	log.Println("Starting TCP proxy on port", listenPort)
+	log.Println("Starting TCP proxy on port", tcpListenPort)
 	err := p.Start()
 	if err != nil {
 		log.Fatalln("Error starting TCP proxy:", err)
 	}
 
-	log.Println("Starting multicast listener on", multicastAddress)
+	log.Println("Starting multicast listener on", multicastListenAddress)
 	err = m.Start()
 	if err != nil {
 		log.Fatalln("Error starting multicast listener:", err)
