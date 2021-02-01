@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/net/ipv4"
 	"log"
 	"net"
 	"regexp"
@@ -62,6 +63,26 @@ func parseAddress(addr *net.UDPAddr) string {
 	}
 }
 
+func listenMulticastUDP(network string, iface *net.Interface, groupAddr *net.UDPAddr) (*net.UDPConn, error) {
+	conn, err := net.ListenUDP(network, groupAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	pc := ipv4.NewPacketConn(conn)
+	err = pc.JoinGroup(iface, groupAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	err = pc.SetMulticastLoopback(true)
+	if err != nil {
+		return nil, err
+	}
+
+	return conn, nil
+}
+
 func (m *MinecraftMulticastListener) Start() error {
 	m.lock.Lock()
 
@@ -76,7 +97,7 @@ func (m *MinecraftMulticastListener) Start() error {
 		return fmt.Errorf("error resolving multicast address: %s", err)
 	}
 
-	m.conn, err = net.ListenMulticastUDP("udp4", nil, addr)
+	m.conn, err = listenMulticastUDP("udp4", nil, addr)
 	if err != nil {
 		m.lock.Unlock()
 		return fmt.Errorf("error starting multicast listener: %s", err)
