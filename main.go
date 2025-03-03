@@ -50,15 +50,18 @@ func promptForServer() (string, int, error) {
 		return "", 0, fmt.Errorf("error reading IP address: %w", err)
 	}
 	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
 
-	fmt.Print("Enter server port (default 25565): ")
+	fmt.Print("Enter server port: ")
 	portStr, err := reader.ReadString('\n')
 	if err != nil {
 		return "", 0, fmt.Errorf("error reading port: %w", err)
 	}
 	portStr = strings.TrimSpace(portStr)
 
-	port := 25565 // default port
+	var port int
 	if portStr != "" {
 		port, err = strconv.Atoi(portStr)
 		if err != nil {
@@ -67,6 +70,8 @@ func promptForServer() (string, int, error) {
 		if port <= 0 || port > 65535 {
 			return "", 0, fmt.Errorf("port number must be between 1 and 65535")
 		}
+	} else {
+		return "", 0, fmt.Errorf("port cannot be empty")
 	}
 
 	return ip, port, nil
