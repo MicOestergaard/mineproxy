@@ -45,7 +45,7 @@ func NewGameAnnouncementHandler(proxy *tcpproxy.Proxy) *gameAnnouncementHandler 
 func promptForServer() (string, int, error) {
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Print("Enter server IP address: ")
+	fmt.Print("Enter minecraft server IP address (default: 127.0.0.1): ")
 	ip, err := reader.ReadString('\n')
 	if err != nil {
 		return "", 0, fmt.Errorf("error reading IP address: %w", err)
@@ -55,26 +55,23 @@ func promptForServer() (string, int, error) {
 		ip = "127.0.0.1"
 	}
 
-	fmt.Print("Enter server port: ")
+	fmt.Print("Enter minecraft server port: ")
 	portStr, err := reader.ReadString('\n')
 	if err != nil {
 		return "", 0, fmt.Errorf("error reading port: %w", err)
 	}
 	portStr = strings.TrimSpace(portStr)
-
-	var port int
-	if portStr != "" {
-		port, err = strconv.Atoi(portStr)
-		if err != nil {
-			return "", 0, fmt.Errorf("invalid port number: %w", err)
-		}
-		if port <= 0 || port > 65535 {
-			return "", 0, fmt.Errorf("port number must be between 1 and 65535")
-		}
-	} else {
+	if portStr == "" {
 		return "", 0, fmt.Errorf("port cannot be empty")
 	}
 
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid port number: %w", err)
+	}
+	if port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("port number must be between 1 and 65535")
+	}
 	return ip, port, nil
 }
 
@@ -134,7 +131,7 @@ func main() {
 		log.Fatalf("Invalid port: %v", err)
 	}
 
-	multicastAddress := "224.0.2.60:4445"
+	const multicastAddress = "224.0.2.60:4445"
 	p := tcpproxy.NewProxy(port)
 	var m *multicastlistener.MinecraftMulticastListener
 
@@ -154,7 +151,6 @@ func main() {
 			ListenAddress: multicastAddress,
 			BufferSize:    1024,
 			RetryDelay:    time.Second,
-			Interface:     nil, // Use default interface
 		}
 
 		g := NewGameAnnouncementHandler(p)
