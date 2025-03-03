@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -101,37 +102,54 @@ func setupCloseHandler(p *tcpproxy.Proxy, m *multicastlistener.MinecraftMulticas
 	}()
 }
 
+func validatePort(port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("port number must be between 1 and 65535")
+	}
+	return nil
+}
+
 func main() {
-	tcpListenPort := 25565
+	var (
+		manualMode bool
+		port       int
+	)
+
+	flag.BoolVar(&manualMode, "manual", false, "Use manual server input instead of multicast discovery")
+	flag.IntVar(&port, "port", 25565, "Port to listen on (1-65535)")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s [flags]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s                     # Listen on default port 25565 with multicast discovery\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -port 25566         # Listen on port 25566 with multicast discovery\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -manual             # Manual server input mode on default port\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -manual -port 25566 # Manual server input mode on port 25566\n", os.Args[0])
+	}
+	flag.Parse()
+
+	if err := validatePort(port); err != nil {
+		log.Fatalf("Invalid port: %v", err)
+	}
+
 	multicastAddress := "224.0.2.60:4445"
-
-	if len(os.Args) > 1 {
-		var err error
-		tcpListenPort, err = strconv.Atoi(os.Args[1])
-		if err != nil {
-			log.Fatalln("Usage:", os.Args[0], "[port]")
-		}
-	}
-
-	fmt.Println("Choose mode:")
-	fmt.Println("1. Automatic discovery (LAN)")
-	fmt.Println("2. Manual server input")
-	fmt.Print("Enter choice (1 or 2): ")
-
-	reader := bufio.NewReader(os.Stdin)
-	choice, err := reader.ReadString('\n')
-	if err != nil {
-		log.Fatalf("Error reading input: %v", err)
-	}
-	choice = strings.TrimSpace(choice)
-
-	p := tcpproxy.NewProxy(tcpListenPort)
+	p := tcpproxy.NewProxy(port)
 	var m *multicastlistener.MinecraftMulticastListener
 
-	switch choice {
-	case "1":
-		// Automatic discovery mode
+	if manualMode {
+		// Manual input mode
+		serverIP, serverPort, err := promptForServer()
+		if err != nil {
+			log.Fatalf("Error getting server details: %v", err)
+		}
 
+		address := fmt.Sprintf("%s:%d", serverIP, serverPort)
+		log.Printf("Using server address: %s", address)
+		p.SetTarget(address)
+	} else {
+		// Automatic discovery mode (default)
 		config := multicastlistener.Config{
 			ListenAddress: multicastAddress,
 			BufferSize:    1024,
@@ -146,26 +164,11 @@ func main() {
 		if err := m.Start(); err != nil {
 			log.Fatalf("Error starting multicast listener: %v", err)
 		}
-
-	case "2":
-		// Manual input mode
-
-		serverIP, serverPort, err := promptForServer()
-		if err != nil {
-			log.Fatalf("Error getting server details: %v", err)
-		}
-
-		address := fmt.Sprintf("%s:%d", serverIP, serverPort)
-		log.Printf("Using server address: %s", address)
-		p.SetTarget(address)
-
-	default:
-		log.Fatalln("Invalid choice. Please enter 1 or 2.")
 	}
 
 	setupCloseHandler(p, m)
 
-	log.Printf("Starting TCP proxy on port %d", tcpListenPort)
+	log.Printf("Starting TCP proxy on port %d", port)
 	if err := p.Start(); err != nil {
 		log.Fatalf("Error starting TCP proxy: %v", err)
 	}
