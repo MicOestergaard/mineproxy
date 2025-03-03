@@ -2,22 +2,24 @@ package tcpproxy
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 type Proxy struct {
 	from string
 	to   string
-	lock *sync.Mutex
+	lock *sync.RWMutex
 	done chan struct{}
 }
 
 func NewProxy(listenPort int) *Proxy {
 	return &Proxy{
 		from: fmt.Sprintf(":%d", listenPort),
-		lock: new(sync.Mutex),
+		lock: new(sync.RWMutex),
 	}
 }
 
@@ -54,22 +56,34 @@ func (p *Proxy) Stop() error {
 }
 
 func (p *Proxy) SetTarget(target string) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
 	p.to = target
+}
+
+func (p *Proxy) getTarget() string {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+	return p.to
 }
 
 func (p *Proxy) waitForConnection(listener net.Listener) {
 	for {
 		select {
 		case <-p.done:
+			listener.Close()
 			return
 		default:
 			connection, err := listener.Accept()
 			if err != nil {
-				log.Println("Error accepting connection:", err)
+				if !isClosedError(err) {
+					log.Println("Error accepting connection:", err)
+				}
 			} else {
 				tcpConnection, ok := connection.(*net.TCPConn)
 				if !ok {
 					log.Println("Accepted connection is not a tcp connection")
+					connection.Close()
 					continue
 				}
 				go p.handleConnection(tcpConnection)
@@ -85,17 +99,19 @@ func (p *Proxy) handleConnection(connection net.Conn) {
 	defer log.Println("Finished handling connection from", remoteAddress)
 	defer connection.Close()
 
-	if p.to == "" {
+	target := p.getTarget()
+	if target == "" {
 		log.Println("Error handling connection: missing target")
 		return
 	}
 
-	remote, err := net.Dial("tcp", p.to)
+	remote, err := net.DialTimeout("tcp", target, 10*time.Second)
 	if err != nil {
 		log.Println("Error handling connection: error connecting to target: ", err)
 		return
 	}
 	defer remote.Close()
+
 	p.establishPipe(connection, remote)
 }
 
@@ -112,11 +128,17 @@ func (p *Proxy) establishPipe(serverConnection, clientConnection net.Conn) {
 	var waitChannel chan struct{}
 	select {
 	case <-clientClosed:
-		_ = tcpServerConnection.SetLinger(0)
-		_ = tcpServerConnection.CloseRead()
+		if err := tcpServerConnection.SetLinger(0); err != nil {
+			log.Printf("Error setting linger: %v", err)
+		}
+		if err := tcpServerConnection.CloseRead(); err != nil {
+			log.Printf("Error closing read: %v", err)
+		}
 		waitChannel = serverClosed
 	case <-serverClosed:
-		_ = tcpClientConnection.CloseRead()
+		if err := tcpClientConnection.CloseRead(); err != nil {
+			log.Printf("Error closing read: %v", err)
+		}
 		waitChannel = clientClosed
 	}
 
@@ -124,15 +146,22 @@ func (p *Proxy) establishPipe(serverConnection, clientConnection net.Conn) {
 }
 
 func copyData(dst, src *net.TCPConn, srcClosed chan struct{}) {
-	_, err := dst.ReadFrom(src)
-	if err != nil {
-		log.Println("error copying data:", err)
+	buf := make([]byte, 32*1024)
+	_, err := io.CopyBuffer(dst, src, buf)
+	if err != nil && !isClosedError(err) {
+		log.Printf("Error copying data: %v", err)
 	}
 
-	err = src.Close()
-	if err != nil {
-		log.Println("error closing source:", err)
+	if err := src.Close(); err != nil {
+		log.Printf("Error closing source: %v", err)
 	}
 
 	srcClosed <- struct{}{}
+}
+
+func isClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err.Error() == "use of closed network connection"
 }

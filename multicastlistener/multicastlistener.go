@@ -1,8 +1,8 @@
 package multicastlistener
 
 import (
+	"context"
 	"fmt"
-	"golang.org/x/net/ipv4"
 	"log"
 	"net"
 	"regexp"
@@ -10,30 +10,61 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 const (
 	maxDatagramSize = 1024
 )
 
-var regex = regexp.MustCompile(`\[MOTD]([^\[\]]*)\[/MOTD].*\[AD]([^\[\]]*)\[/AD]`)
+var (
+	regex    *regexp.Regexp
+	regexErr error
+)
 
-type MinecraftMulticastListener struct {
-	listenAddress string
-	conn          *net.UDPConn
-	lock          *sync.Mutex
-	stop          bool
-	stopped       chan struct{}
-	gameFound     func(motd, serverIP string, serverPort int)
+func init() {
+	regex, regexErr = regexp.Compile(`\[MOTD]([^\[\]]*)\[/MOTD].*\[AD]([^\[\]]*)\[/AD]`)
+	if regexErr != nil {
+		log.Fatalf("Failed to compile regex: %v", regexErr)
+	}
 }
 
-func NewMinecraftMulticastListener(listenAddress string, gameFound func(serverMOTD, serverIP string, serverPort int)) *MinecraftMulticastListener {
+type Config struct {
+	ListenAddress string
+	BufferSize    int
+	RetryDelay    time.Duration
+	Interface     *net.Interface
+}
+
+type MinecraftMulticastListener struct {
+	config    Config
+	conn      *net.UDPConn
+	lock      *sync.Mutex
+	stop      bool
+	stopped   chan struct{}
+	gameFound func(motd, serverIP string, serverPort int)
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
+
+func NewMinecraftMulticastListener(config Config, gameFound func(serverMOTD, serverIP string, serverPort int)) *MinecraftMulticastListener {
+	if config.BufferSize == 0 {
+		config.BufferSize = maxDatagramSize
+	}
+	if config.RetryDelay == 0 {
+		config.RetryDelay = time.Second
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 	return &MinecraftMulticastListener{
-		listenAddress: listenAddress,
-		lock:          new(sync.Mutex),
-		stop:          true,
-		stopped:       make(chan struct{}),
-		gameFound:     gameFound,
+		config:    config,
+		lock:      new(sync.Mutex),
+		stop:      true,
+		stopped:   make(chan struct{}),
+		gameFound: gameFound,
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
@@ -86,59 +117,65 @@ func listenMulticastUDP(network string, iface *net.Interface, groupAddr *net.UDP
 
 func (m *MinecraftMulticastListener) Start() error {
 	m.lock.Lock()
+	defer m.lock.Unlock()
 
 	if !m.stop {
-		m.lock.Unlock()
 		return fmt.Errorf("already started")
 	}
 
-	addr, err := net.ResolveUDPAddr("udp4", m.listenAddress)
+	addr, err := net.ResolveUDPAddr("udp4", m.config.ListenAddress)
 	if err != nil {
-		m.lock.Unlock()
-		return fmt.Errorf("error resolving multicast address: %s", err)
+		return fmt.Errorf("error resolving multicast address: %w", err)
 	}
 
-	m.conn, err = listenMulticastUDP("udp4", nil, addr)
+	m.conn, err = listenMulticastUDP("udp4", m.config.Interface, addr)
 	if err != nil {
-		m.lock.Unlock()
-		return fmt.Errorf("error starting multicast listener: %s", err)
+		return fmt.Errorf("error starting multicast listener: %w", err)
 	}
 
-	err = m.conn.SetReadBuffer(maxDatagramSize)
+	err = m.conn.SetReadBuffer(m.config.BufferSize)
 	if err != nil {
-		m.lock.Unlock()
-		return fmt.Errorf("error setting multicast read buffer size: %s", err)
+		m.conn.Close()
+		return fmt.Errorf("error setting multicast read buffer size: %w", err)
 	}
 
 	m.stop = false
-	m.lock.Unlock()
+	m.ctx, m.cancel = context.WithCancel(context.Background())
 
-	go func() {
-		var b [maxDatagramSize]byte
-		for {
+	go m.listenLoop()
+
+	return nil
+}
+
+func (m *MinecraftMulticastListener) listenLoop() {
+	var b [maxDatagramSize]byte
+	for {
+		select {
+		case <-m.ctx.Done():
+			m.stopped <- struct{}{}
+			return
+		default:
 			rLen, senderAddr, err := m.conn.ReadFromUDP(b[:])
 			if err != nil {
 				if m.stop {
 					m.stopped <- struct{}{}
-					break
+					return
 				}
-				log.Println("Error reading multicast data:", err)
-				time.Sleep(1 * time.Second)
+				log.Printf("Error reading multicast data: %v", err)
+				time.Sleep(m.config.RetryDelay)
 				continue
 			}
 
 			motd, serverPort, err := parseMulticastMessage(b[:rLen])
 			if err != nil {
-				log.Println("Error parsing multicast message:", err)
+				log.Printf("Error parsing multicast message: %v", err)
 				continue
 			}
 
 			serverIP := parseAddress(senderAddr)
 			m.gameFound(motd, serverIP, serverPort)
 		}
-	}()
-
-	return nil
+	}
 }
 
 func (m *MinecraftMulticastListener) Stop() error {
@@ -150,7 +187,12 @@ func (m *MinecraftMulticastListener) Stop() error {
 	}
 
 	m.stop = true
-	_ = m.conn.Close()
+	m.cancel()
+	if m.conn != nil {
+		if err := m.conn.Close(); err != nil {
+			log.Printf("Error closing connection: %v", err)
+		}
+	}
 	<-m.stopped
 
 	return nil

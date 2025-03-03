@@ -1,5 +1,7 @@
 module github.com/MicOestergaard/mineproxy
 
-go 1.15
+go 1.22
 
-require golang.org/x/net v0.0.0-20210119194325-5f4716e94777
+require golang.org/x/net v0.35.0
+
+require golang.org/x/sys v0.30.0 // indirect
